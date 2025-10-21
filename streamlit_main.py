@@ -3,6 +3,9 @@ import joblib
 import numpy as np
 import pandas as pd
 
+# Page config
+st.set_page_config(layout="wide", page_title="Spam Detection Models")
+
 # Load models (cache them so they're only loaded once)
 @st.cache_resource
 def load_models():
@@ -18,7 +21,19 @@ def load_dataset():
     data['message'] = data['Subject'].fillna('') + " " + data['Message'].fillna('')
     return data
 
-st.title("Spam Detection with Three Models")
+# Initialize leaderboard in session state
+if 'leaderboard' not in st.session_state:
+    st.session_state.leaderboard = {
+        'Logistic Regression': {'correct': 0, 'total': 0},
+        'Random Forest': {'correct': 0, 'total': 0},
+        'XGBoost': {'correct': 0, 'total': 0}
+    }
+
+# Initialize random message
+if 'random_message' not in st.session_state:
+    st.session_state.random_message = ""
+
+st.title("Spam Detection Model Comparison")
 
 # Load models and data
 rf_model, xgb_model, lr_model = load_models()
@@ -28,34 +43,35 @@ data = load_dataset()
 col1, col2, col3 = st.columns([1, 2, 1])
 
 with col2:
-    input_col, dice_col, submit_col = st.columns([5, 1, 1])
-    with input_col:
-        user_input = st.text_input("Enter a message", 
-                                    label_visibility="collapsed", 
-                                    placeholder="Type a message to check...",
-                                    key="message_input")
+    dice_col, input_col, submit_col = st.columns([1, 5, 1])
+    
     with dice_col:
-        if st.button("🎲"):
+        if st.button("Random"):
             # Select random message from dataset
-            random_message = data['message'].sample(1).iloc[0]
-            st.session_state.message_input = random_message
+            st.session_state.random_message = data['message'].sample(1).iloc[0]
             st.rerun()
     
+    with input_col:
+        # Use the random message as default value if it exists
+        default_value = st.session_state.random_message if st.session_state.random_message else ""
+        user_input = st.text_input("Enter a message", 
+                                    value=default_value,
+                                    label_visibility="collapsed", 
+                                    placeholder="Type a message to check...")
+    
     with submit_col:
-        submit_button = st.button("▶️")
+        submit_button = st.button("Submit")
 
 st.divider()
 
-# Three columns for model results
+# Three columns for model results - using full width
+lr_col, rf_col, xgb_col = st.columns(3)
+
+# Process if there's input and submit was clicked
 if user_input and submit_button:
-    # Left: Logistic Regression
-    # Center: Random Forest  
-    # Right: XGBoost
-    lr_col, rf_col, xgb_col = st.columns(3)
-    
     # LOGISTIC REGRESSION (Left)
     with lr_col:
-        st.subheader("📊 Logistic Regression")
+        st.subheader("Logistic Regression")
         lr_vectorizer = lr_model.named_steps['vectorizer']
         lr_classifier = lr_model.named_steps['classifier']
         X_transformed = lr_vectorizer.transform([user_input])
@@ -104,10 +120,13 @@ if user_input and submit_button:
         else:
             st.write("No recognized words")
             st.latex(f"\\text{{No features}} \\rightarrow \\text{{{lr_pred_str}}} ({lr_proba[1]:.2f})")
+        
+        # Store prediction for leaderboard
+        st.session_state['lr_pred'] = lr_pred_str
     
     # RANDOM FOREST (Center)
     with rf_col:
-        st.subheader("🌲 Random Forest")
+        st.subheader("Random Forest")
         rf_pred = rf_model.predict([user_input])[0]
         rf_proba = rf_model.predict_proba([user_input])[0]
         
@@ -139,10 +158,13 @@ if user_input and submit_button:
         
         latex_str = " ".join(latex_lines)
         st.latex(latex_str)
+        
+        # Store prediction for leaderboard
+        st.session_state['rf_pred'] = rf_pred_str
     
     # XGBOOST (Right)
     with xgb_col:
-        st.subheader("⚡ XGBoost")
+        st.subheader("XGBoost")
         xgb_vectorizer = xgb_model.named_steps['vectorizer']
         xgb_classifier = xgb_model.named_steps['classifier']
         X_transformed = xgb_vectorizer.transform([user_input])
@@ -172,6 +194,68 @@ if user_input and submit_button:
         # Join with line breaks
         latex_str = r" \\ ".join(latex_parts)
         st.latex(latex_str)
+        
+        # Store prediction for leaderboard
+        st.session_state['xgb_pred'] = xgb_pred
+    
+    # Ground truth input for leaderboard
+    st.divider()
+    truth_col1, truth_col2, truth_col3 = st.columns([1, 2, 1])
+    with truth_col2:
+        st.write("**Was this spam or ham?**")
+        button_col1, button_col2, button_col3 = st.columns(3)
+        with button_col1:
+            if st.button("SPAM", use_container_width=True):
+                ground_truth = 'SPAM'
+                # Update leaderboard
+                for model_name, pred_key in [('Logistic Regression', 'lr_pred'), 
+                                               ('Random Forest', 'rf_pred'), 
+                                               ('XGBoost', 'xgb_pred')]:
+                    st.session_state.leaderboard[model_name]['total'] += 1
+                    if st.session_state.get(pred_key) == ground_truth:
+                        st.session_state.leaderboard[model_name]['correct'] += 1
+                st.rerun()
+        
+        with button_col2:
+            if st.button("HAM", use_container_width=True):
+                ground_truth = 'HAM'
+                # Update leaderboard
+                for model_name, pred_key in [('Logistic Regression', 'lr_pred'), 
+                                               ('Random Forest', 'rf_pred'), 
+                                               ('XGBoost', 'xgb_pred')]:
+                    st.session_state.leaderboard[model_name]['total'] += 1
+                    if st.session_state.get(pred_key) == ground_truth:
+                        st.session_state.leaderboard[model_name]['correct'] += 1
+                st.rerun()
+        
+        with button_col3:
+            if st.button("Reset Leaderboard", use_container_width=True):
+                st.session_state.leaderboard = {
+                    'Logistic Regression': {'correct': 0, 'total': 0},
+                    'Random Forest': {'correct': 0, 'total': 0},
+                    'XGBoost': {'correct': 0, 'total': 0}
+                }
+                st.rerun()
 
 else:
-    st.info("👆 Enter a message or click 🎲 for a random message, then click ▶️ to classify!")
+    st.info("Enter a message or click Random for a random message, then click Submit to classify")
+
+# Display leaderboard
+st.divider()
+st.subheader("Leaderboard")
+
+leaderboard_data = []
+for model_name, stats in st.session_state.leaderboard.items():
+    total = stats['total']
+    correct = stats['correct']
+    accuracy = (correct / total * 100) if total > 0 else 0
+    leaderboard_data.append({
+        'Model': model_name,
+        'Correct': correct,
+        'Total': total,
+        'Accuracy': f"{accuracy:.1f}%"
+    })
+
+leaderboard_df = pd.DataFrame(leaderboard_data)
+leaderboard_df = leaderboard_df.sort_values('Correct', ascending=False)
+st.dataframe(leaderboard_df, use_container_width=True, hide_index=True)

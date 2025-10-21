@@ -6,6 +6,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.pipeline import Pipeline
 import xgboost as xgb
+import re
 
 print("="*70)
 print("LOADING ENRON DATASET")
@@ -17,7 +18,26 @@ print(data['Spam/Ham'].value_counts())
 
 data['label'] = data['Spam/Ham']
 data['message'] = data['Subject'].fillna('') + " " + data['Message'].fillna('')
+
+# Clean messages: remove special characters, keep only letters, numbers, and spaces
+def clean_text(text):
+    # Convert to lowercase
+    text = text.lower()
+    # Remove URLs
+    text = re.sub(r'http\S+|www\S+', '', text)
+    # Remove email addresses
+    text = re.sub(r'\S+@\S+', '', text)
+    # Keep only letters, numbers, and spaces
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+data['message'] = data['message'].apply(clean_text)
 data = data[['label', 'message']]
+
+# Remove empty messages after cleaning
+data = data[data['message'].str.len() > 0]
 
 ham = data[data['label'] == 'ham']
 spam = data[data['label'] == 'spam']
@@ -49,11 +69,20 @@ X_train_binary, X_test_binary, y_train_binary, y_test_binary = train_test_split(
 )
 
 print("\n" + "="*70)
-print("TRAINING ALL THREE MODELS")
+print("TRAINING ALL THREE MODELS WITH FILTERED VOCABULARY")
 print("="*70)
 
+# Custom CountVectorizer with filtering
+vectorizer_params = {
+    'min_df': 2,           # Word must appear in at least 2 documents
+    'max_df': 0.95,        # Word must appear in less than 95% of documents
+    'max_features': 1000,  # Keep only top 1000 features
+    'ngram_range': (1, 1), # Only unigrams
+    'token_pattern': r'\b[a-z]{2,}\b'  # Only words with 2+ letters
+}
+
 rf_model = Pipeline([
-    ('vectorizer', CountVectorizer()),
+    ('vectorizer', CountVectorizer(**vectorizer_params)),
     ('classifier', RandomForestClassifier(
         n_estimators=3,
         max_depth=5,
@@ -65,7 +94,7 @@ rf_model.fit(X_train, y_train)
 print("Random Forest trained")
 
 xgb_model = Pipeline([
-    ('vectorizer', CountVectorizer()),
+    ('vectorizer', CountVectorizer(**vectorizer_params)),
     ('classifier', xgb.XGBClassifier(
         n_estimators=3,
         max_depth=3,
@@ -80,7 +109,7 @@ xgb_model.fit(X_train_binary, y_train_binary)
 print("XGBoost trained")
 
 lr_model = Pipeline([
-    ('vectorizer', CountVectorizer()),
+    ('vectorizer', CountVectorizer(**vectorizer_params)),
     ('classifier', LogisticRegression(
         max_iter=1000,
         random_state=42
@@ -89,6 +118,9 @@ lr_model = Pipeline([
 print("Training Logistic Regression...")
 lr_model.fit(X_train, y_train)
 print("Logistic Regression trained")
+
+# Print vocabulary size
+print(f"\nVocabulary size: {len(rf_model.named_steps['vectorizer'].get_feature_names_out())} words")
 
 test_messages = [
     'WINNER! You have won $1000. Click here now!',
@@ -102,12 +134,16 @@ for msg_idx, message in enumerate(test_messages):
     print(f"MESSAGE {msg_idx + 1}: {message}")
     print("="*70)
     
+    # Clean the test message
+    cleaned_message = clean_text(message)
+    print(f"CLEANED: {cleaned_message}")
+    
     print("\nRANDOM FOREST")
     print("-" * 70)
     
     rf_vectorizer = rf_model.named_steps['vectorizer']
     rf_classifier = rf_model.named_steps['classifier']
-    X_transformed_rf = rf_vectorizer.transform([message])
+    X_transformed_rf = rf_vectorizer.transform([cleaned_message])
     
     print("\nIndividual Tree Votes:")
     rf_votes = []
@@ -126,8 +162,8 @@ for msg_idx, message in enumerate(test_messages):
         bar = "#" * int(percentage / 10)
         print(f"  {str(label).upper()}: {count}/3 trees ({percentage:.1f}%) {bar}")
     
-    rf_final = rf_model.predict([message])[0]
-    rf_proba = rf_model.predict_proba([message])[0]
+    rf_final = rf_model.predict([cleaned_message])[0]
+    rf_proba = rf_model.predict_proba([cleaned_message])[0]
     print(f"\nFINAL: {str(rf_final).upper()} | ham={rf_proba[0]:.3f}, spam={rf_proba[1]:.3f}")
     
     print("\n" + "-" * 70)
@@ -136,7 +172,7 @@ for msg_idx, message in enumerate(test_messages):
     
     xgb_vectorizer = xgb_model.named_steps['vectorizer']
     xgb_classifier = xgb_model.named_steps['classifier']
-    X_transformed_xgb = xgb_vectorizer.transform([message])
+    X_transformed_xgb = xgb_vectorizer.transform([cleaned_message])
     
     print("\nSequential Tree Contributions:")
     prev_spam_score = 0.5
@@ -165,13 +201,13 @@ for msg_idx, message in enumerate(test_messages):
     
     lr_vectorizer = lr_model.named_steps['vectorizer']
     lr_classifier = lr_model.named_steps['classifier']
-    X_transformed_lr = lr_vectorizer.transform([message])
+    X_transformed_lr = lr_vectorizer.transform([cleaned_message])
     
     feature_names = lr_vectorizer.get_feature_names_out()
     coefficients = lr_classifier.coef_[0]
     
-    words_in_message = message.lower().split()
-    print(f"\nOriginal words in message: {words_in_message}")
+    words_in_message = cleaned_message.split()
+    print(f"\nCleaned words in message: {words_in_message}")
     print(f"Total word count: {len(words_in_message)}")
     
     word_indices = X_transformed_lr.nonzero()[1]
@@ -214,8 +250,8 @@ for msg_idx, message in enumerate(test_messages):
         print(f"\nCalculation:")
         print(f"  Only intercept: {decision_score:+.4f}")
     
-    lr_final = lr_model.predict([message])[0]
-    lr_proba = lr_model.predict_proba([message])[0]
+    lr_final = lr_model.predict([cleaned_message])[0]
+    lr_proba = lr_model.predict_proba([cleaned_message])[0]
     
     print(f"\nFINAL: {str(lr_final).upper()} | ham={lr_proba[0]:.3f}, spam={lr_proba[1]:.3f}")
 
@@ -224,17 +260,38 @@ print("SUMMARY TABLE")
 print("="*70)
 
 for message in test_messages:
-    rf_pred = rf_model.predict([message])[0]
-    rf_conf = rf_model.predict_proba([message])[0][1]
+    cleaned_message = clean_text(message)
     
-    xgb_proba = xgb_classifier.predict_proba(xgb_model.named_steps['vectorizer'].transform([message]))[0]
+    rf_pred = rf_model.predict([cleaned_message])[0]
+    rf_conf = rf_model.predict_proba([cleaned_message])[0][1]
+    
+    xgb_proba = xgb_classifier.predict_proba(xgb_model.named_steps['vectorizer'].transform([cleaned_message]))[0]
     xgb_pred = 'spam' if xgb_proba[1] > 0.5 else 'ham'
     xgb_conf = xgb_proba[1]
     
-    lr_pred = lr_model.predict([message])[0]
-    lr_conf = lr_model.predict_proba([message])[0][1]
+    lr_pred = lr_model.predict([cleaned_message])[0]
+    lr_conf = lr_model.predict_proba([cleaned_message])[0][1]
     
     print(f"\n{message[:50]}")
     print(f"  RF:  {str(rf_pred).upper():4s} ({rf_conf:.2f})")
     print(f"  XGB: {xgb_pred.upper():4s} ({xgb_conf:.2f})")
     print(f"  LR:  {str(lr_pred).upper():4s} ({lr_conf:.2f})")
+
+
+import joblib
+
+# Save the models
+print("\n" + "="*70)
+print("SAVING MODELS")
+print("="*70)
+
+joblib.dump(rf_model, 'rf_model.pkl')
+print("✓ Random Forest saved as 'rf_model.pkl'")
+
+joblib.dump(xgb_model, 'xgb_model.pkl')
+print("✓ XGBoost saved as 'xgb_model.pkl'")
+
+joblib.dump(lr_model, 'lr_model.pkl')
+print("✓ Logistic Regression saved as 'lr_model.pkl'")
+
+print("\nAll models saved successfully!")
